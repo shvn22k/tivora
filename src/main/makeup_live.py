@@ -16,6 +16,12 @@ from src.core.skin_tone import (
 from src.core.lighting import detect_lighting
 from src.core.lipstick_renderer import apply_dynamic_lipstick
 from src.core.blush_generator import apply_dynamic_blush
+from src.core.color_palette import (
+    generate_lipstick_palette,
+    generate_blush_palette,
+    draw_color_palette,
+    get_clicked_color
+)
 
 # MediaPipe face mesh
 mp_face = mp.solutions.face_mesh
@@ -44,11 +50,49 @@ STABLE_FRAMES = 30  # Lock color after 30 frames
 last_face_detected = False
 stable_skin_color_hex = None
 
+# Color picker state
+selected_lipstick_color = None
+selected_blush_color = None
+lipstick_palette = None
+blush_palette = None
+lipstick_swatches = []
+blush_swatches = []
+
+# Mouse callback for color picker
+def mouse_callback(event, x, y, flags, param):
+    global selected_lipstick_color, selected_blush_color, lipstick_swatches, blush_swatches
+    
+    if event == cv2.EVENT_LBUTTONDOWN:
+        print(f"Mouse clicked at ({x}, {y})")
+        # Check lipstick palette
+        if lipstick_swatches:
+            color, palette_type = get_clicked_color(x, y, lipstick_swatches)
+            if color is not None:
+                selected_lipstick_color = color
+                print(f"✓ Selected lipstick color: RGB{color}")
+                return
+        
+        # Check blush palette
+        if blush_swatches:
+            color, palette_type = get_clicked_color(x, y, blush_swatches)
+            if color is not None:
+                selected_blush_color = color
+                print(f"✓ Selected blush color: RGB{color}")
+                return
+        
+        print(f"  No color swatch clicked (lipstick swatches: {len(lipstick_swatches)}, blush swatches: {len(blush_swatches)})")
+
 cap = cv2.VideoCapture(1)
 if not cap.isOpened():
     raise RuntimeError("Cannot open webcam")
 
-print("💄 TIVORA Dynamic AR Makeup Engine Active\nPress ESC to exit.")
+print("💄 TIVORA Dynamic AR Makeup Engine Active")
+print("Click on color swatches to try different shades")
+print("Press ESC to exit, 'r' to reset to auto colors")
+
+# Set up mouse callback
+cv2.namedWindow('Tivora AR Makeup - Prototype')
+cv2.setMouseCallback('Tivora AR Makeup - Prototype', mouse_callback)
 
 while True:
     ret, frame = cap.read()
@@ -121,6 +165,23 @@ while True:
         # Detect lighting conditions
         light_type, brightness = detect_lighting(frame)
         
+        # Generate color palettes based on skin tone (update when skin tone changes)
+        if prev_skin_lab is not None:
+            new_lipstick_palette = generate_lipstick_palette(prev_skin_lab, light_type)
+            new_blush_palette = generate_blush_palette(prev_skin_lab, light_type)
+            
+            # Set default colors (first shade) if not already selected
+            if selected_lipstick_color is None and new_lipstick_palette and len(new_lipstick_palette) > 0:
+                selected_lipstick_color = new_lipstick_palette[0]
+                print(f"Auto-applied default lipstick: RGB{selected_lipstick_color}")
+            
+            if selected_blush_color is None and new_blush_palette and len(new_blush_palette) > 0:
+                selected_blush_color = new_blush_palette[0]
+                print(f"Auto-applied default blush: RGB{selected_blush_color}")
+            
+            lipstick_palette = new_lipstick_palette
+            blush_palette = new_blush_palette
+        
         # Create lip mask from landmarks
         lip_points = [coords[i][:2] for i in UPPER_LIP_IDX + LOWER_LIP_IDX[::-1] if i < len(coords)]
         if len(lip_points) >= 6:
@@ -134,20 +195,61 @@ while True:
         cheek_mask = smooth_mask(prev_cheek_mask, cheek_mask_raw, decay=0.75)
         prev_cheek_mask = cheek_mask
         
-        # Apply lipstick with dynamic color selection
+        # Apply lipstick with selected or dynamic color
         if lip_mask is not None and lip_mask.max() > 0.01:
             out = apply_dynamic_lipstick(
                 out, lip_mask, prev_skin_lab, 
-                light_type=light_type, coords=coords, intensity=0.7
+                light_type=light_type, coords=coords, intensity=0.7,
+                custom_color_rgb=selected_lipstick_color
             )
         
-        # Apply dynamic blush with lighting-aware adjustments
+        # Apply dynamic blush with selected or dynamic color
         if cheek_mask is not None and cheek_mask.max() > 0.01:
             out = apply_dynamic_blush(
                 out, cheek_mask, prev_skin_lab,
                 light_type=light_type, brightness=brightness, 
-                coords=coords, strength=1.0
+                coords=coords, strength=1.0,
+                custom_color_rgb=selected_blush_color
             )
+        
+        # Draw color picker palettes (centered below face)
+        if lipstick_palette is not None:
+            # Position lipstick palette in bottom area
+            lipstick_swatches = draw_color_palette(out, lipstick_palette, 'lipstick', start_y=int(h * 0.70))
+            for i, swatch in enumerate(lipstick_swatches):
+                swatch['type'] = 'lipstick'
+                # Highlight selected color with bright green border
+                # Compare tuples properly
+                if selected_lipstick_color is not None:
+                    swatch_color = swatch['color']
+                    if (isinstance(swatch_color, tuple) and isinstance(selected_lipstick_color, tuple) and
+                        len(swatch_color) == 3 and len(selected_lipstick_color) == 3 and
+                        swatch_color[0] == selected_lipstick_color[0] and
+                        swatch_color[1] == selected_lipstick_color[1] and
+                        swatch_color[2] == selected_lipstick_color[2]):
+                        cv2.rectangle(out, 
+                                     (swatch['x'] - 4, swatch['y'] - 4),
+                                     (swatch['x'] + swatch['width'] + 4, swatch['y'] + swatch['height'] + 4),
+                                     (0, 255, 0), 5)
+        
+        if blush_palette is not None:
+            # Position blush palette below lipstick
+            blush_swatches = draw_color_palette(out, blush_palette, 'blush', start_y=int(h * 0.85))
+            for i, swatch in enumerate(blush_swatches):
+                swatch['type'] = 'blush'
+                # Highlight selected color with bright green border
+                # Compare tuples properly
+                if selected_blush_color is not None:
+                    swatch_color = swatch['color']
+                    if (isinstance(swatch_color, tuple) and isinstance(selected_blush_color, tuple) and
+                        len(swatch_color) == 3 and len(selected_blush_color) == 3 and
+                        swatch_color[0] == selected_blush_color[0] and
+                        swatch_color[1] == selected_blush_color[1] and
+                        swatch_color[2] == selected_blush_color[2]):
+                        cv2.rectangle(out,
+                                     (swatch['x'] - 4, swatch['y'] - 4),
+                                     (swatch['x'] + swatch['width'] + 4, swatch['y'] + swatch['height'] + 4),
+                                     (0, 255, 0), 5)
         
         # Display info with accurate hex color
         if prev_skin_lab is not None:
@@ -176,18 +278,32 @@ while True:
             if person_changed:
                 cv2.putText(out, "Person Changed!", (12, 130), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+            # Show selected colors status
+            y_offset = 148
+            if selected_lipstick_color is not None:
+                cv2.putText(out, "Lipstick: CUSTOM", (12, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            else:
+                cv2.putText(out, "Lipstick: AUTO", (12, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            
+            if selected_blush_color is not None:
+                cv2.putText(out, "Blush: CUSTOM", (12, y_offset + 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            else:
+                cv2.putText(out, "Blush: AUTO", (12, y_offset + 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     cv2.imshow('Tivora AR Makeup - Prototype', out)
     
-    # Debug windows
-    lip_mask_vis = (np.clip(lip_mask, 0.0, 1.0) * 255).astype(np.uint8) if lip_mask is not None else np.zeros((h, w), dtype=np.uint8)
-    cheek_mask_vis = (np.clip(cheek_mask, 0.0, 1.0) * 255).astype(np.uint8) if cheek_mask is not None else np.zeros((h, w), dtype=np.uint8)
-    cv2.imshow("DEBUG_LIP_MASK", lip_mask_vis)
-    cv2.imshow("DEBUG_CHEEK_MASK", cheek_mask_vis)
-    
     k = cv2.waitKey(1) & 0xFF
-    if k == 27:
+    if k == 27:  # ESC
         break
+    elif k == ord('r') or k == ord('R'):  # Reset to auto colors
+        selected_lipstick_color = None
+        selected_blush_color = None
+        print("Reset to automatic color selection")
 
 cap.release()
 cv2.destroyAllWindows()
