@@ -1,0 +1,395 @@
+# src/core/masks.py
+import cv2
+import numpy as np
+
+# helper polygon mask
+def polygon_mask_from_points(img_shape, points):
+    mask = np.zeros(img_shape[:2], dtype=np.uint8)
+    if len(points) >= 3:
+        cv2.fillPoly(mask, [np.array(points, dtype=np.int32)], 255)
+    return mask
+
+def to_int_coords(landmarks, image_shape):
+    h, w = image_shape[:2]
+    return [(int(p.x * w), int(p.y * h), getattr(p, 'z', 0)) for p in landmarks]
+
+
+def _valid_point(pt, w, h):
+    x, y = pt[:2]
+    return 0 <= x < w and 0 <= y < h
+
+
+def _face_bbox(coords, w, h):
+    xs = [x for x, y, *_ in coords if 0 <= x < w and 0 <= y < h]
+    ys = [y for x, y, *_ in coords if 0 <= x < w and 0 <= y < h]
+    if not xs or not ys:
+        return None
+    xmin, xmax = max(0, min(xs)), min(w - 1, max(xs))
+    ymin, ymax = max(0, min(ys)), min(h - 1, max(ys))
+    return xmin, ymin, xmax, ymax
+
+# More comprehensive cheek landmarks for natural W-shape blush
+LEFT_CHEEK_IDX = [205, 50, 93, 132, 58, 172, 136, 150, 116, 117, 118, 119, 120, 121, 126, 142, 36, 205, 50]
+RIGHT_CHEEK_IDX = [425, 280, 323, 361, 288, 397, 365, 379, 346, 347, 348, 349, 350, 351, 356, 372, 266, 425, 280]
+
+def create_dynamic_blush_mask(frame, coords):
+    """
+    Creates a smooth, symmetrical blush mask that adapts to face shape
+    and avoids glasses reflections. Softer, more realistic version.
+    """
+    h, w = frame.shape[:2]
+    if coords is None:
+        return None
+    
+    mask = np.zeros((h, w), dtype=np.float32)
+    
+    try:
+        # Key landmarks
+        left_cheekbone = np.array(coords[234][:2])
+        right_cheekbone = np.array(coords[454][:2])
+        nose_tip = np.array(coords[1][:2])
+        left_eye_bottom = np.array(coords[145][:2])
+        right_eye_bottom = np.array(coords[374][:2])
+    except (IndexError, KeyError):
+        return None
+    
+    # Mid face symmetry
+    mid_x = int((left_cheekbone[0] + right_cheekbone[0]) / 2)
+    band_y = int((left_eye_bottom[1] + right_eye_bottom[1]) / 2 + h * 0.03)
+    band_thickness = int(h * 0.035)
+    band_halfwidth = int(abs(right_cheekbone[0] - left_cheekbone[0]) / 2 * 1.0)
+    
+    # Soft blush ovals
+    cv2.ellipse(mask, (mid_x, band_y),
+                (band_halfwidth, band_thickness),
+                0, 0, 360, 180, -1)
+    
+    # Tiny blend over nose for natural continuity
+    cv2.circle(mask, (int(nose_tip[0]), int(nose_tip[1]) + int(h * 0.01)),
+               int(w * 0.05), 100, -1)
+    
+    # Feather edges
+    mask = cv2.GaussianBlur(mask, (161, 161), 0)
+    mask = np.clip(mask.astype(np.float32) / 255.0, 0.0, 0.6)
+    
+    # Glasses reflection fade
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    bright_zones = cv2.threshold(gray, 210, 1, cv2.THRESH_BINARY)[1]
+    bright_zones = cv2.GaussianBlur(bright_zones, (41, 41), 0)
+    bright_zones = bright_zones.astype(np.float32)
+    mask *= (1.0 - bright_zones * 0.6)
+    
+    return mask
+
+def detect_glasses(frame, coords):
+    """
+    Detect potential glasses by analyzing brightness/reflections near eyes.
+    Returns True if glasses detected.
+    """
+    if coords is None:
+        return False
+    
+    h, w = frame.shape[:2]
+    left_eye_pts = [coords[i][:2] for i in range(130, 144) if i < len(coords)]
+    right_eye_pts = [coords[i][:2] for i in range(359, 374) if i < len(coords)]
+    
+    def brightness_ratio(eye_pts):
+        if not eye_pts:
+            return 0.0
+        xs = [p[0] for p in eye_pts]
+        ys = [p[1] for p in eye_pts]
+        xmin, xmax = int(min(xs)), int(max(xs))
+        ymin, ymax = int(min(ys)), int(max(ys))
+        xmin, xmax = max(0, xmin), min(w-1, xmax)
+        ymin, ymax = max(0, ymin), min(h-1, ymax)
+        
+        if xmax <= xmin or ymax <= ymin:
+            return 0.0
+        
+        roi = frame[ymin:ymax, xmin:xmax]
+        if roi.size == 0:
+            return 0.0
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        bright_pixels = np.sum(gray > 200)
+        ratio = bright_pixels / (roi.shape[0] * roi.shape[1])
+        return ratio
+    
+    left_bright = brightness_ratio(left_eye_pts)
+    right_bright = brightness_ratio(right_eye_pts)
+    avg_bright = (left_bright + right_bright) / 2
+    
+    return avg_bright > 0.08  # threshold for reflections typical of glasses
+
+
+def smooth_mask(prev_mask, new_mask, decay=0.7):
+    """
+    Temporal smoothing for binary masks. Keeps masks alive briefly when detection drops.
+    Returns float mask 0..1 or None.
+    """
+    if new_mask is not None:
+        new_mask = new_mask.astype(np.float32)
+        if new_mask.max() < 0.01:
+            new_mask = None
+    if prev_mask is not None:
+        prev_mask = prev_mask.astype(np.float32)
+        if prev_mask.max() < 0.01:
+            prev_mask = None
+
+    if new_mask is None and prev_mask is None:
+        return None
+    if new_mask is None:
+        decayed = prev_mask * decay
+        return None if decayed.max() < 0.01 else decayed
+    if prev_mask is None:
+        return new_mask
+    blended = cv2.addWeighted(new_mask, 1 - decay, prev_mask, decay, 0)
+    return blended
+
+
+def _collect_points(coords, indices, w, h):
+    pts = []
+    for idx in indices:
+        if idx >= len(coords):
+            continue
+        x, y, *_ = coords[idx]
+        if _valid_point((x, y), w, h):
+            pts.append([x, y])
+    return pts
+
+
+def _auto_lip_mask_from_parse(seg_map, coords, min_ratio, max_ratio):
+    if coords is None:
+        return None
+    h, w = seg_map.shape
+    bbox = _face_bbox(coords, w, h)
+    if bbox is None:
+        return None
+    xmin, ymin, xmax, ymax = bbox
+    face_h = max(1, ymax - ymin)
+    face_w = max(1, xmax - xmin)
+
+    best = None
+    best_score = 0.0
+    unique_classes = np.unique(seg_map)
+    for cls in unique_classes:
+        if cls == 0:
+            continue
+        cls_mask = (seg_map == cls).astype(np.uint8)
+        coverage = float(np.count_nonzero(cls_mask)) / float(cls_mask.size)
+        if coverage < min_ratio or coverage > max_ratio:
+            continue
+
+        region = cls_mask[ymin:ymax, xmin:xmax]
+        if np.count_nonzero(region) < 40:
+            continue
+        ys, xs = np.nonzero(region)
+        cy = ymin + ys.mean()
+        cx = xmin + xs.mean()
+        norm_y = (cy - ymin) / face_h
+        norm_x = abs((cx - (xmin + face_w/2)) / (face_w/2 + 1e-5))
+        # Lips should sit near lower half (0.6-0.85) and fairly centered.
+        y_score = np.exp(-((norm_y - 0.72)**2) / (2 * 0.07**2))
+        x_score = np.exp(-((norm_x)**2) / (2 * 0.5**2))
+        score = coverage * y_score * x_score
+        if score > best_score:
+            best_score = score
+            best = cls_mask
+
+    if best is None or best_score < 1e-4:
+        return None
+    return best.astype(np.uint8) * 255
+
+
+def get_lip_mask_from_parse(seg_map, coords=None, min_ratio=5e-4, max_ratio=0.08):
+    # default BiSeNet mapping (7 upper, 8 lower). If mask looks wrong, auto-detect.
+    if seg_map is None:
+        return None
+    lip_mask = np.logical_or(seg_map == 7, seg_map == 8).astype(np.uint8) * 255
+    coverage = float(np.count_nonzero(lip_mask > 25)) / float(lip_mask.size)
+    if coverage < min_ratio or coverage > max_ratio:
+        auto_mask = _auto_lip_mask_from_parse(seg_map, coords, min_ratio, max_ratio)
+        if auto_mask is None:
+            return None
+        lip_mask = auto_mask
+    lip_mask = cv2.GaussianBlur(lip_mask, (15,15), 0)
+    return lip_mask.astype(np.uint8)
+
+def get_cheek_mask_hybrid(frame, seg_map, coords, left_idx=234, right_idx=454):
+    """
+    Create a natural W-shape blush mask using landmarks.
+    Dynamically sized based on face geometry.
+    """
+    h, w = frame.shape[:2]
+    if coords is None:
+        return None
+    
+    bbox = _face_bbox(coords, w, h)
+    if bbox is None:
+        return None
+    
+    xmin, ymin, xmax, ymax = bbox
+    face_w = max(1, xmax - xmin)
+    face_h = max(1, ymax - ymin)
+    face_center_x = (xmin + xmax) / 2.0
+    
+    # Create separate masks for left and right cheeks
+    left_mask = np.zeros((h, w), dtype=np.uint8)
+    right_mask = np.zeros((h, w), dtype=np.uint8)
+    
+    # Left cheek
+    left_pts = _collect_points(coords, LEFT_CHEEK_IDX, w, h)
+    if len(left_pts) >= 4:
+        left_pts_arr = np.array(left_pts, dtype=np.float32)
+        # Expand left cheek region
+        left_centroid = np.mean(left_pts_arr, axis=0)
+        # Create elliptical region around left cheek
+        left_x, left_y = int(left_centroid[0]), int(left_centroid[1])
+        left_radius_x = max(15, int(face_w * 0.12))
+        left_radius_y = max(12, int(face_h * 0.10))
+        cv2.ellipse(left_mask, (left_x, left_y), (left_radius_x, left_radius_y), 0, 0, 360, 255, -1)
+    
+    # Right cheek
+    right_pts = _collect_points(coords, RIGHT_CHEEK_IDX, w, h)
+    if len(right_pts) >= 4:
+        right_pts_arr = np.array(right_pts, dtype=np.float32)
+        # Expand right cheek region
+        right_centroid = np.mean(right_pts_arr, axis=0)
+        # Create elliptical region around right cheek
+        right_x, right_y = int(right_centroid[0]), int(right_centroid[1])
+        right_radius_x = max(15, int(face_w * 0.12))
+        right_radius_y = max(12, int(face_h * 0.10))
+        cv2.ellipse(right_mask, (right_x, right_y), (right_radius_x, right_radius_y), 0, 0, 360, 255, -1)
+    
+    # Combine left and right
+    mask = cv2.bitwise_or(left_mask, right_mask)
+    
+    if mask.max() == 0:
+        return None
+    
+    # Constrain to cheek region (middle 40-70% of face height, avoid center nose area)
+    cheek_ymin = ymin + int(face_h * 0.40)
+    cheek_ymax = ymin + int(face_h * 0.70)
+    constrained = np.zeros_like(mask)
+    constrained[cheek_ymin:cheek_ymax, :] = mask[cheek_ymin:cheek_ymax, :]
+    mask = constrained
+    
+    # Create W-profile: stronger on sides, weaker in center
+    x = np.arange(w, dtype=np.float32)
+    # Left peak (around 25% of face width from left edge)
+    left_peak = xmin + face_w * 0.25
+    # Right peak (around 75% of face width from left edge)
+    right_peak = xmin + face_w * 0.75
+    # Center dip (nose area - should be minimal)
+    center = face_center_x
+    
+    # Create W-profile with two peaks and center dip
+    left_profile = np.exp(-((x - left_peak) ** 2) / (2 * (face_w * 0.15) ** 2))
+    right_profile = np.exp(-((x - right_peak) ** 2) / (2 * (face_w * 0.15) ** 2))
+    center_dip = 1.0 - 0.7 * np.exp(-((x - center) ** 2) / (2 * (face_w * 0.08) ** 2))
+    
+    # Combine profiles for W-shape
+    profile = np.maximum(left_profile, right_profile) * center_dip
+    profile = np.clip(profile, 0.0, 1.0)
+    
+    # Apply W-profile to mask
+    profile_mask = profile[None, :].repeat(h, axis=0)
+    mask = mask.astype(np.float32) * profile_mask
+    
+    # Heavy blur for natural gradient
+    blur_size = max(51, int(min(face_w, face_h) * 0.15))
+    if blur_size % 2 == 0:
+        blur_size += 1
+    mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+    
+    # Normalize to 0-1
+    mask = np.clip(mask / 255.0, 0.0, 1.0).astype(np.float32)
+    
+    # Validate coverage
+    coverage = float(np.count_nonzero(mask > 0.01)) / float(mask.size)
+    if coverage < 0.01 or coverage > 0.25:
+        return None
+    
+    return mask
+
+def get_lip_mask_from_landmarks(frame, coords, upper_idx_list, lower_idx_list,
+                                min_ratio=8e-4, max_ratio=0.05):
+    """
+    Create a continuous lip mask covering both upper and lower lips.
+    Expands the mask to be natural-looking, not just point-based.
+    """
+    if coords is None:
+        return None
+    h, w = frame.shape[:2]
+    
+    # Collect all lip points (both upper and lower)
+    all_pts = []
+    for idx in upper_idx_list + lower_idx_list:
+        if idx >= len(coords):
+            continue
+        x, y, *_ = coords[idx]
+        if _valid_point((x, y), w, h):
+            all_pts.append([x, y])
+    
+    if len(all_pts) < 8:
+        return None
+    
+    pts_arr = np.array(all_pts, dtype=np.float32)
+    bbox = _face_bbox(coords, w, h)
+    
+    # Filter to lip region within face
+    if bbox is not None:
+        xmin, ymin, xmax, ymax = bbox
+        face_h = max(1, ymax - ymin)
+        lip_ymin = ymin + 0.35 * face_h
+        lip_ymax = ymin + 0.85 * face_h
+        mask_valid = (pts_arr[:,1] >= lip_ymin) & (pts_arr[:,1] <= lip_ymax)
+        pts_arr = pts_arr[mask_valid]
+    
+    if pts_arr.shape[0] < 6:
+        return None
+
+    # Remove outliers
+    centroid = np.mean(pts_arr, axis=0)
+    dists = np.linalg.norm(pts_arr - centroid, axis=1)
+    if pts_arr.shape[0] >= 8:
+        thresh = max(10.0, np.median(dists) * 2.0)
+        pts_arr = pts_arr[dists <= thresh]
+    
+    if pts_arr.shape[0] < 6:
+        return None
+
+    # Create mask from convex hull
+    pts = np.round(pts_arr).astype(np.int32)
+    hull = cv2.convexHull(pts)
+    mask = polygon_mask_from_points(frame.shape, hull.reshape(-1, 2))
+    
+    # Expand mask to make it continuous and natural (dilate then blur)
+    if bbox is not None:
+        xmin, ymin, xmax, ymax = bbox
+        face_w = max(1, xmax - xmin)
+        face_h = max(1, ymax - ymin)
+        # Dynamic kernel size based on face size
+        dilate_size = max(3, int(min(face_w, face_h) * 0.03))
+        kernel = np.ones((dilate_size, dilate_size), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+    
+    # Smooth blur for natural look
+    blur_size = max(15, int((h + w) / 100))
+    if blur_size % 2 == 0:
+        blur_size += 1
+    mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+
+    # Clip to face region
+    if bbox is not None:
+        xmin, ymin, xmax, ymax = bbox
+        pad_x = int((xmax - xmin) * 0.2)
+        pad_y = int((ymax - ymin) * 0.15)
+        crop = np.zeros_like(mask)
+        crop[max(ymin-pad_y,0):min(ymax+pad_y,h),
+             max(xmin-pad_x,0):min(xmax+pad_x,w)] = 1
+        mask = mask * crop
+
+    coverage = float(np.count_nonzero(mask > 10)) / float(mask.size)
+    if coverage < min_ratio or coverage > max_ratio:
+        return None
+    return (mask.astype(np.float32)/255.0)
