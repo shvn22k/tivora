@@ -41,7 +41,7 @@ def determine_lip_color(skin_lab, light_type):
 
 def apply_dynamic_lipstick(frame, lip_mask_float, skin_lab, light_type='neutral', coords=None, intensity=0.7, custom_color_rgb=None):
     """
-    Apply realistic lipstick with natural variation, depth, and gloss effect.
+    Apply realistic lipstick with smooth, uniform color application.
     frame: BGR uint8
     lip_mask_float: 0..1 float mask (HxW)
     skin_lab: LAB mean (array 3)
@@ -58,79 +58,64 @@ def apply_dynamic_lipstick(frame, lip_mask_float, skin_lab, light_type='neutral'
     # Use custom color if provided, otherwise determine dynamically
     if custom_color_rgb is not None:
         lip_rgb = custom_color_rgb
-        base_intensity = 0.65  # Visible but natural
+        base_intensity = 0.75  # Visible but natural
     else:
         lip_rgb = determine_lip_color(skin_lab, light_type)
-        base_intensity = intensity * 0.75  # Visible but natural
+        base_intensity = intensity * 0.8  # Visible but natural
     
-    # Create base lip color
-    lip_color = np.zeros_like(frame, dtype=np.uint8)
-    lip_color[:] = lip_rgb[::-1]  # RGB → BGR
+    # Convert RGB to BGR
+    lip_bgr = np.array([lip_rgb[2], lip_rgb[1], lip_rgb[0]], dtype=np.uint8)
     
-    # Create intensity variation map for natural depth
-    # Stronger at center, softer at edges
-    distance_map = cv2.distanceTransform(
-        (lip_mask_float > 0.01).astype(np.uint8), 
-        cv2.DIST_L2, 5
-    )
-    if distance_map.max() > 0:
-        distance_map = distance_map / distance_map.max()
-    else:
-        distance_map = lip_mask_float
+    # Create smooth, uniform mask with soft edges
+    # Use larger blur for smoother transitions
+    smooth_mask = cv2.GaussianBlur(lip_mask_float, (25, 25), 0)
+    smooth_mask = np.clip(smooth_mask, 0.0, 1.0)
     
-    # Create gradient: stronger in center, fades at edges
-    center_intensity = distance_map * 0.8 + 0.2  # 0.2 to 1.0
-    edge_fade = cv2.GaussianBlur(lip_mask_float, (31, 31), 0)
-    variation_mask = center_intensity * edge_fade
-    
-    # Blend in LAB space with variation
+    # Convert frame to LAB for better color blending
     frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
-    lip_lab = cv2.cvtColor(lip_color, cv2.COLOR_BGR2LAB).astype(np.float32)
     
-    # Create variation in color intensity (darker at edges, lighter in center)
-    variation_3d = np.repeat(variation_mask[:, :, None], 3, axis=2)
-    intensity_map = variation_3d * base_intensity
+    # Convert lip color to LAB
+    lip_bgr_single = np.uint8([[lip_bgr]])
+    lip_lab_single = cv2.cvtColor(lip_bgr_single, cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
     
-    # Soft blend that preserves natural lip texture
+    # Create uniform lip color overlay in LAB space
+    lip_lab = np.zeros((h, w, 3), dtype=np.float32)
+    lip_lab[:, :, :] = lip_lab_single
+    
+    # Apply uniform intensity across the mask
+    mask_3d = np.repeat(smooth_mask[:, :, None], 3, axis=2)
+    intensity_map = mask_3d * base_intensity
+    
+    # Blend in LAB space for natural color mixing
     blended_lab = (1 - intensity_map) * frame_lab + intensity_map * lip_lab
-    
-    # Add subtle color variation (slightly darker at outer edges)
-    edge_mask = 1.0 - (distance_map * 0.3)  # Darker at edges
-    edge_mask_3d = np.repeat(edge_mask[:, :, None], 3, axis=2)
-    blended_lab[:, :, 0] *= (0.95 + edge_mask_3d[:, :, 0] * 0.1)  # Slight darkening at edges
-    
     blended_bgr = cv2.cvtColor(np.clip(blended_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
     
-    # Add natural gloss highlight (stronger in center)
-    gloss_mask = np.zeros((h, w), dtype=np.float32)
+    # Add subtle gloss highlight only in center (very subtle)
     if coords is not None:
         try:
-            # Use lip center landmarks for gloss
-            for idx in [13, 14]:
-                if idx < len(coords):
-                    cx, cy = coords[idx][:2]
-                    cv2.circle(gloss_mask, (int(cx), int(cy - 5)), int(h * 0.025), 255, -1)
-        except (IndexError, KeyError):
+            # Find lip center from landmarks
+            lip_center_x = int(np.mean([coords[i][0] for i in [13, 14, 17, 18] if i < len(coords)]))
+            lip_center_y = int(np.mean([coords[i][1] for i in [13, 14, 17, 18] if i < len(coords)]))
+            
+            gloss_mask = np.zeros((h, w), dtype=np.float32)
+            cv2.circle(gloss_mask, (lip_center_x, lip_center_y - int(h * 0.01)), 
+                      int(h * 0.02), 1.0, -1)
+            gloss_mask = cv2.GaussianBlur(gloss_mask, (31, 31), 0)
+            gloss_mask = np.clip(gloss_mask * 0.3, 0.0, 1.0)  # Very subtle
+            
+            # Add slight brightness increase for gloss
+            gloss_3d = np.repeat(gloss_mask[:, :, None], 3, axis=2)
+            blended_bgr = blended_bgr.astype(np.float32) + gloss_3d * np.array([8, 6, 5])
+            blended_bgr = np.clip(blended_bgr, 0, 255).astype(np.uint8)
+        except (IndexError, KeyError, ValueError):
             pass
     
-    if gloss_mask.max() > 0:
-        gloss_mask = cv2.GaussianBlur(gloss_mask, (61, 61), 0) / 255.0
-        # Multiply with distance map so gloss is stronger in center
-        gloss_mask = gloss_mask * distance_map * 0.6
-        
-        # Add subtle brightness and color shift for gloss
-        gloss_layer = blended_bgr.astype(np.float32)
-        gloss_3d = np.repeat(gloss_mask[:, :, None], 3, axis=2)
-        gloss_layer += gloss_3d * np.array([15, 12, 10])  # Subtle brightness increase
-        blended_bgr = np.clip(gloss_layer, 0, 255).astype(np.uint8)
+    # Final blend with smooth mask edges
+    # Use the original smooth mask for blending
+    final_mask_3d = np.repeat(smooth_mask[:, :, None], 3, axis=2)
     
-    # Preserve natural texture by blending with original
-    # Use softer mask edges for seamless blend
-    soft_mask = cv2.GaussianBlur(lip_mask_float, (15, 15), 0)
-    soft_mask_3d = np.repeat(soft_mask[:, :, None], 3, axis=2)
-    
-    # Final blend: preserve more original texture but make it visible
-    out = frame.astype(np.float32) * (1 - soft_mask_3d * 0.85) + blended_bgr.astype(np.float32) * (soft_mask_3d * 0.85)
+    # Blend: preserve some original texture but apply lipstick uniformly
+    out = frame.astype(np.float32) * (1 - final_mask_3d * 0.8) + blended_bgr.astype(np.float32) * (final_mask_3d * 0.8)
     out = np.clip(out, 0, 255).astype(np.uint8)
     
     return out

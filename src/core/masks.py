@@ -70,7 +70,7 @@ def create_dynamic_blush_mask(frame, coords):
     
     # Feather edges
     mask = cv2.GaussianBlur(mask, (161, 161), 0)
-    mask = np.clip(mask.astype(np.float32) / 255.0, 0.0, 0.6)
+    mask = np.clip(mask.astype(np.float32) / 255.0, 0.0, 1.0)  # Allow full intensity
     
     # Glasses reflection fade
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -119,6 +119,123 @@ def detect_glasses(frame, coords):
     avg_bright = (left_bright + right_bright) / 2
     
     return avg_bright > 0.08  # threshold for reflections typical of glasses
+
+
+def create_eyeshadow_mask(frame, coords):
+    """
+    Creates a natural eyeshadow mask covering the eyelid area (between eye and eyebrow).
+    Works with glasses by avoiding bright reflection zones.
+    Returns float mask 0..1.
+    """
+    h, w = frame.shape[:2]
+    if coords is None or len(coords) < 400:
+        return None
+    
+    mask = np.zeros((h, w), dtype=np.float32)
+    
+    try:
+        # MediaPipe face mesh landmarks for eyes and eyebrows
+        # Left eye: 33-46 (outer to inner)
+        # Right eye: 263-276 (outer to inner)
+        # Left eyebrow: 107-116
+        # Right eyebrow: 336-345
+        
+        # Left eye region
+        left_eye_indices = list(range(33, 47))  # Left eye contour
+        left_eyebrow_indices = list(range(107, 117))  # Left eyebrow
+        
+        # Right eye region
+        right_eye_indices = list(range(263, 277))  # Right eye contour
+        right_eyebrow_indices = list(range(336, 346))  # Right eyebrow
+        
+        def create_eye_mask(eye_indices, eyebrow_indices, side='left'):
+            eye_pts = [coords[i][:2] for i in eye_indices if i < len(coords)]
+            eyebrow_pts = [coords[i][:2] for i in eyebrow_indices if i < len(coords)]
+            
+            if len(eye_pts) < 6 or len(eyebrow_pts) < 6:
+                return None
+            
+            # Get bounding box of eye and eyebrow
+            eye_xs = [p[0] for p in eye_pts]
+            eye_ys = [p[1] for p in eye_pts]
+            brow_xs = [p[0] for p in eyebrow_pts]
+            brow_ys = [p[1] for p in eyebrow_pts]
+            
+            x_min = max(0, int(min(min(eye_xs), min(brow_xs))))
+            x_max = min(w-1, int(max(max(eye_xs), max(brow_xs))))
+            y_top = max(0, int(min(brow_ys)))  # Top of eyebrow
+            y_bottom = min(h-1, int(max(eye_ys)))  # Bottom of eye
+            
+            if x_max <= x_min or y_bottom <= y_top:
+                return None
+            
+            # Create gradient mask: stronger near lash line, fades upward
+            eye_mask = np.zeros((h, w), dtype=np.uint8)
+            
+            # Get average eye position (lash line)
+            eye_center_y = int(np.mean(eye_ys))
+            eye_center_x = int(np.mean(eye_xs))
+            
+            # Create elliptical region for eyeshadow
+            # Width: eye width + some padding
+            eye_width = max(20, int((max(eye_xs) - min(eye_xs)) * 1.3))
+            # Height: distance from eye to eyebrow
+            eye_height = max(15, int((y_bottom - y_top) * 0.7))
+            
+            # Draw ellipse centered above the eye
+            center_y = max(0, min(h-1, eye_center_y - int(eye_height * 0.3)))  # Slightly above eye center
+            axes = (int(eye_width // 2), int(eye_height))
+            center = (int(eye_center_x), int(center_y))
+            
+            # Draw filled ellipse
+            cv2.ellipse(eye_mask, center, axes, 0, 0, 360, 255, -1)
+            
+            # Create vertical gradient: stronger at bottom (lash line), fades upward
+            # Convert to float for gradient application
+            eye_mask_float = eye_mask.astype(np.float32)
+            for y in range(y_top, min(y_bottom + 1, h)):
+                if y_bottom > y_top:
+                    # Normalized position: 1.0 at bottom (lash line), 0.0 at top
+                    norm_pos = (y_bottom - y) / (y_bottom - y_top)
+                else:
+                    norm_pos = 0.5
+                # Stronger near lash line (higher norm_pos = stronger)
+                gradient = np.power(norm_pos, 1.5)  # Exponential falloff
+                eye_mask_float[y, x_min:x_max+1] *= gradient
+            
+            # Soft blur for natural look
+            eye_mask_float = cv2.GaussianBlur(eye_mask_float, (31, 31), 0)
+            eye_mask_float = np.clip(eye_mask_float / 255.0, 0.0, 0.8)  # Max intensity 0.8
+            
+            return eye_mask_float
+        
+        # Create masks for both eyes
+        left_mask = create_eye_mask(left_eye_indices, left_eyebrow_indices, 'left')
+        right_mask = create_eye_mask(right_eye_indices, right_eyebrow_indices, 'right')
+        
+        if left_mask is not None:
+            mask = np.maximum(mask, left_mask)
+        if right_mask is not None:
+            mask = np.maximum(mask, right_mask)
+        
+        # Avoid glasses reflections (bright zones)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        bright_zones = cv2.threshold(gray, 210, 1, cv2.THRESH_BINARY)[1]
+        bright_zones = cv2.GaussianBlur(bright_zones, (41, 41), 0)
+        bright_zones = bright_zones.astype(np.float32)
+        mask *= (1.0 - bright_zones * 0.8)  # Strong fade in bright zones
+        
+        # Final soft blur
+        mask = cv2.GaussianBlur(mask, (21, 21), 0)
+        mask = np.clip(mask, 0.0, 0.8)
+        
+        if mask.max() < 0.01:
+            return None
+        
+        return mask
+        
+    except (IndexError, KeyError, ValueError) as e:
+        return None
 
 
 def smooth_mask(prev_mask, new_mask, decay=0.7):

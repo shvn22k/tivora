@@ -26,24 +26,24 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         # Convert RGB to BGR
         blush_rgb = custom_color_rgb
         blush_bgr = np.array([blush_rgb[2], blush_rgb[1], blush_rgb[0]], dtype=np.uint8)
-        # Visible but natural
-        base_intensity = 0.4
+        # Much more visible blush
+        base_intensity = 0.85
     else:
         # Adjust tone based on lighting - more subtle adjustments
         target_lab = np.array(skin_lab, dtype=np.float32).copy()
         
         if light_type == "warm":
             # Warmer tone = soft coral-pink
-            target_lab[1] += 6    # add red (reduced from 9)
-            target_lab[2] -= 2    # reduce yellow (reduced from 3)
+            target_lab[1] += 12    # add more red for visibility
+            target_lab[2] -= 4    # reduce yellow
         elif light_type == "cool":
             # Cooler tone = mauve / rose
-            target_lab[1] += 5    # reduced from 7
-            target_lab[2] -= 5    # reduced from 7
+            target_lab[1] += 10    # more red
+            target_lab[2] -= 8    # more cool
         else:
             # Neutral = natural pink-beige
-            target_lab[1] += 6    # reduced from 8
-            target_lab[2] -= 3    # reduced from 5
+            target_lab[1] += 11    # more red
+            target_lab[2] -= 5    # slight cool shift
         
         # Build LAB overlay image
         lab_overlay = np.zeros((h, w, 3), dtype=np.uint8)
@@ -52,8 +52,8 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         lab_overlay[:, :, 2] = np.clip(target_lab[2], 0, 255)
         blush_bgr = cv2.cvtColor(lab_overlay, cv2.COLOR_LAB2BGR)[0, 0]
         
-        # Dynamically adjust intensity depending on brightness
-        base_intensity = np.interp(brightness, [0.3, 0.7], [0.5, 0.35])  # More visible
+        # Dynamically adjust intensity depending on brightness - much more visible
+        base_intensity = np.interp(brightness, [0.3, 0.7], [0.85, 0.75])  # Very visible
     
     # Create intensity variation map for natural gradient
     # Stronger in center, fades smoothly at edges
@@ -67,9 +67,9 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         distance_map = cheek_mask_float
     
     # Create natural gradient: stronger in center, soft fade at edges
-    center_intensity = distance_map * 0.7 + 0.3  # 0.3 to 1.0
+    center_intensity = distance_map * 0.8 + 0.4  # 0.4 to 1.2 (boosted for visibility)
     edge_fade = cv2.GaussianBlur(cheek_mask_float, (101, 101), 0)  # Very soft edges
-    variation_mask = center_intensity * edge_fade
+    variation_mask = np.clip(center_intensity * edge_fade, 0.0, 1.0)  # Ensure valid range
     
     # Blend in LAB space with natural variation
     frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -92,7 +92,7 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
     soft_mask_3d = np.repeat(soft_mask[:, :, None], 3, axis=2)
     
     # Final blend: preserve most of original texture, add visible blush
-    blend_factor = soft_mask_3d * 0.7  # 70% blend for visibility while preserving texture
+    blend_factor = soft_mask_3d * 0.9  # 90% blend for very strong visibility
     out = frame.astype(np.float32) * (1 - blend_factor) + blended_bgr.astype(np.float32) * blend_factor
     out = np.clip(out, 0, 255).astype(np.uint8)
     

@@ -66,7 +66,8 @@ def dynamic_skin_tone_tracker(frame, coords, prev_lab=None, alpha=0.95, locked=F
         return prev_lab
     
     h, w = frame.shape[:2]
-    region_indices = [10, 234, 454]  # forehead, left & right cheeks
+    # Use more regions for better accuracy: forehead, cheeks, chin
+    region_indices = [10, 151, 234, 454, 175]  # forehead, chin, left cheek, right cheek, nose bridge
     all_pixels = []
 
     for idx in region_indices:
@@ -75,7 +76,7 @@ def dynamic_skin_tone_tracker(frame, coords, prev_lab=None, alpha=0.95, locked=F
         x, y = coords[idx][:2]
         x, y = int(x), int(y)
 
-        patch_size = 20
+        patch_size = 25  # Slightly larger patch
         y1, y2 = max(0, y-patch_size), min(h, y+patch_size)
         x1, x2 = max(0, x-patch_size), min(w, x+patch_size)
         patch = frame[y1:y2, x1:x2]
@@ -83,14 +84,16 @@ def dynamic_skin_tone_tracker(frame, coords, prev_lab=None, alpha=0.95, locked=F
         if patch.size > 0:
             pixels = patch.reshape(-1, 3)
             brightness = np.mean(pixels, axis=1)
-            bright_pixels = pixels[brightness > 50]  # drop deep shadows
-            if len(bright_pixels) > 0:
-                all_pixels.append(bright_pixels)
+            # Filter for well-lit pixels (not too dark, not too bright/overexposed)
+            good_pixels = pixels[(brightness > 60) & (brightness < 240)]
+            if len(good_pixels) > 0:
+                all_pixels.append(good_pixels)
 
     if not all_pixels:
         return prev_lab
 
     all_pixels = np.vstack(all_pixels)
+    # Use median of well-lit pixels for accurate representation
     bgr_color = np.median(all_pixels, axis=0).astype(np.uint8)
     
     # Convert to LAB
@@ -136,7 +139,8 @@ def get_skin_color_bgr(frame, coords):
         return None, "#000000"
     
     h, w = frame.shape[:2]
-    region_indices = [10, 234, 454]  # forehead, left & right cheeks
+    # Use more regions for better accuracy: forehead, cheeks, chin
+    region_indices = [10, 151, 234, 454, 175]  # forehead, chin, left cheek, right cheek, nose bridge
     all_pixels = []
 
     for idx in region_indices:
@@ -145,7 +149,7 @@ def get_skin_color_bgr(frame, coords):
         x, y = coords[idx][:2]
         x, y = int(x), int(y)
 
-        patch_size = 20
+        patch_size = 25  # Slightly larger patch
         y1, y2 = max(0, y-patch_size), min(h, y+patch_size)
         x1, x2 = max(0, x-patch_size), min(w, x+patch_size)
         patch = frame[y1:y2, x1:x2]
@@ -153,14 +157,16 @@ def get_skin_color_bgr(frame, coords):
         if patch.size > 0:
             pixels = patch.reshape(-1, 3)
             brightness = np.mean(pixels, axis=1)
-            bright_pixels = pixels[brightness > 50]
-            if len(bright_pixels) > 0:
-                all_pixels.append(bright_pixels)
+            # Filter for well-lit pixels (not too dark, not too bright/overexposed)
+            good_pixels = pixels[(brightness > 60) & (brightness < 240)]
+            if len(good_pixels) > 0:
+                all_pixels.append(good_pixels)
 
     if not all_pixels:
         return None, "#000000"
 
     all_pixels = np.vstack(all_pixels)
+    # Use median of well-lit pixels for accurate representation
     bgr_color = np.median(all_pixels, axis=0).astype(np.uint8)
     
     # Convert BGR to RGB hex
