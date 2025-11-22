@@ -12,7 +12,7 @@ def detect_lighting(frame):
     avg_a = np.mean(lab[:, :, 1])
     avg_b = np.mean(lab[:, :, 2])
     avg_l = np.mean(lab[:, :, 0])
-    
+
     if avg_b - avg_a > 10:
         light_type = "warm"
     elif avg_a - avg_b > 10:

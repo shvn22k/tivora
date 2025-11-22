@@ -34,51 +34,192 @@ RIGHT_CHEEK_IDX = [425, 280, 323, 361, 288, 397, 365, 379, 346, 347, 348, 349, 3
 
 def create_dynamic_blush_mask(frame, coords):
     """
-    Creates a smooth, symmetrical blush mask that adapts to face shape
-    and avoids glasses reflections. Softer, more realistic version.
+    Create a dynamic, subtle blush mask covering cheeks and nose bridge in W-shape.
+    Adapts to face shape, respects face boundaries, and handles glasses gracefully.
     """
     h, w = frame.shape[:2]
     if coords is None:
         return None
-    
-    mask = np.zeros((h, w), dtype=np.float32)
-    
+
     try:
-        # Key landmarks
-        left_cheekbone = np.array(coords[234][:2])
-        right_cheekbone = np.array(coords[454][:2])
+        # Key landmarks for dynamic blush placement
+        left_cheekbone = np.array(coords[234][:2])  # Left cheekbone (cheek apple)
+        right_cheekbone = np.array(coords[454][:2])  # Right cheekbone (cheek apple)
         nose_tip = np.array(coords[1][:2])
-        left_eye_bottom = np.array(coords[145][:2])
-        right_eye_bottom = np.array(coords[374][:2])
+        nose_bridge = np.array(coords[6][:2])
+        
+        # Eye landmarks for positioning reference
+        left_eye_bottom = np.array(coords[145][:2])  # Left eye bottom
+        right_eye_bottom = np.array(coords[374][:2])  # Right eye bottom
+        
+        # Face boundary landmarks
+        left_face = np.array(coords[234][:2])  # Left cheek
+        right_face = np.array(coords[454][:2])  # Right cheek
+        
     except (IndexError, KeyError):
         return None
+
+    mask = np.zeros((h, w), dtype=np.float32)
+    bbox = _face_bbox(coords, w, h)
+    if bbox is None:
+        return None
+
+    xmin, ymin, xmax, ymax = bbox
+    face_w = max(1, xmax - xmin)
+    face_h = max(1, ymax - ymin)
+
+    # Calculate dynamic blush position - on cheekbones, extending towards temples
+    # Position blush lower on cheeks (away from eyelids) - on cheekbone line
+    eye_level_y = int((left_eye_bottom[1] + right_eye_bottom[1]) / 2)
+    cheek_level_y = int((left_cheekbone[1] + right_cheekbone[1]) / 2)
     
-    # Mid face symmetry
-    mid_x = int((left_cheekbone[0] + right_cheekbone[0]) / 2)
-    band_y = int((left_eye_bottom[1] + right_eye_bottom[1]) / 2 + h * 0.03)
-    band_thickness = int(h * 0.035)
-    band_halfwidth = int(abs(right_cheekbone[0] - left_cheekbone[0]) / 2 * 1.0)
+    # Position blush on cheekbone line, well below eyes to avoid touching eyelids
+    # Use cheek level as base, add offset to position it on the cheekbone
+    blush_y_base = int(cheek_level_y + face_h * 0.08)  # Lower on cheeks, away from eyes
     
-    # Soft blush ovals
-    cv2.ellipse(mask, (mid_x, band_y),
-                (band_halfwidth, band_thickness),
-                0, 0, 360, 180, -1)
+    # Ensure blush stays within face bounds but well below eyes
+    blush_y_base = np.clip(blush_y_base, 
+                          eye_level_y + int(face_h * 0.12),  # Well below eyes
+                          ymax - int(face_h * 0.15))
     
-    # Tiny blend over nose for natural continuity
-    cv2.circle(mask, (int(nose_tip[0]), int(nose_tip[1]) + int(h * 0.01)),
-               int(w * 0.05), 100, -1)
+    # Calculate cheek centers - on actual cheekbones, extending outward
+    # Position more outward (towards temples) for full cheek coverage
+    left_cheek_x = int(np.clip(left_cheekbone[0] - int(face_w * 0.02), 
+                               xmin + int(face_w * 0.05), xmax - int(face_w * 0.15)))
+    right_cheek_x = int(np.clip(right_cheekbone[0] + int(face_w * 0.02), 
+                                xmin + int(face_w * 0.15), xmax - int(face_w * 0.05)))
     
-    # Feather edges
+    # Nose bridge position
+    nose_x = int(np.clip(nose_tip[0], xmin, xmax))
+    nose_y = int(np.clip((nose_tip[1] + nose_bridge[1]) * 0.6, ymin, ymax))
+    
+    # Dynamic sizing based on face dimensions - much larger for full cheek coverage
+    # Extend outward (towards temples) and cover full cheek area
+    cheek_width = max(50, int(face_w * 0.30))  # Much wider - extends towards temples
+    cheek_height = max(45, int(face_h * 0.20))  # Taller - covers full cheek height
+    nose_width = max(30, int(face_w * 0.15))  # Larger nose bridge
+    nose_height = max(25, int(face_h * 0.12))  # Taller nose bridge
+    
+    def add_soft_blob(canvas, center, axes, value):
+        """Add a soft, blurred blob to the mask."""
+        blob = np.zeros_like(canvas, dtype=np.uint8)
+        cv2.ellipse(blob, center, axes, 0, 0, 360, value, -1)
+        # Soft blur for natural blending
+        blob = cv2.GaussianBlur(blob, (121, 121), 0)
+        return np.maximum(canvas, blob.astype(np.float32) / 255.0)
+    
+    # Main cheek blobs - positioned on cheekbones, extending outward
+    # Left cheek blob - main area
+    left_center = (left_cheek_x, blush_y_base)
+    mask = add_soft_blob(mask, left_center, (cheek_width, cheek_height), 255)
+    
+    # Right cheek blob - main area
+    right_center = (right_cheek_x, blush_y_base)
+    mask = add_soft_blob(mask, right_center, (cheek_width, cheek_height), 255)
+    
+    # Extend cheeks upward along cheekbone line (towards temples)
+    # Left cheek extension - upward and outward
+    left_extend_x = int(left_cheek_x - int(face_w * 0.05))  # More outward
+    left_extend_y = int(blush_y_base - face_h * 0.08)  # Upward along cheekbone
+    left_extend_center = (left_extend_x, left_extend_y)
+    mask = add_soft_blob(mask, left_extend_center, 
+                        (int(cheek_width * 0.7), int(cheek_height * 0.6)), 220)
+    
+    # Right cheek extension - upward and outward
+    right_extend_x = int(right_cheek_x + int(face_w * 0.05))  # More outward
+    right_extend_y = int(blush_y_base - face_h * 0.08)  # Upward along cheekbone
+    right_extend_center = (right_extend_x, right_extend_y)
+    mask = add_soft_blob(mask, right_extend_center, 
+                        (int(cheek_width * 0.7), int(cheek_height * 0.6)), 220)
+    
+    # Nose bridge blob - connects cheeks in W shape
+    nose_center = (nose_x, int(blush_y_base * 0.96))  # Slightly higher for W shape
+    mask = add_soft_blob(mask, nose_center, (nose_width, nose_height), 200)
+    
+    # Connect cheeks to nose bridge smoothly with wider paths
+    # Create connecting paths for W shape - wider for better coverage
+    left_to_nose_points = np.array([
+        [left_cheek_x + cheek_width // 4, blush_y_base],
+        [nose_x - nose_width * 1.8, int(blush_y_base * 0.98)],
+        [nose_x - nose_width // 2, int(blush_y_base * 0.96)],
+        [nose_x, int(blush_y_base * 0.96)]
+    ], dtype=np.int32)
+    
+    right_to_nose_points = np.array([
+        [nose_x, int(blush_y_base * 0.96)],
+        [nose_x + nose_width // 2, int(blush_y_base * 0.96)],
+        [nose_x + nose_width * 1.8, int(blush_y_base * 0.98)],
+        [right_cheek_x - cheek_width // 4, blush_y_base]
+    ], dtype=np.int32)
+    
+    # Draw wider soft connecting paths
+    connection_mask = np.zeros_like(mask, dtype=np.uint8)
+    cv2.polylines(connection_mask, [left_to_nose_points], False, 220, int(face_w * 0.12))
+    cv2.polylines(connection_mask, [right_to_nose_points], False, 220, int(face_w * 0.12))
+    connection_mask = cv2.GaussianBlur(connection_mask, (151, 151), 0)
+    mask = np.maximum(mask, connection_mask.astype(np.float32) / 255.0)
+    
+    # Add lower cheek coverage - extend downward for full cheek area
+    # Left lower cheek
+    left_lower_y = int(blush_y_base + face_h * 0.06)
+    left_lower_center = (left_cheek_x, left_lower_y)
+    mask = add_soft_blob(mask, left_lower_center, 
+                        (int(cheek_width * 0.9), int(cheek_height * 0.7)), 200)
+    
+    # Right lower cheek
+    right_lower_y = int(blush_y_base + face_h * 0.06)
+    right_lower_center = (right_cheek_x, right_lower_y)
+    mask = add_soft_blob(mask, right_lower_center, 
+                        (int(cheek_width * 0.9), int(cheek_height * 0.7)), 200)
+    
+    # Final soft blur to blend everything together
     mask = cv2.GaussianBlur(mask, (161, 161), 0)
-    mask = np.clip(mask.astype(np.float32) / 255.0, 0.0, 1.0)  # Allow full intensity
     
-    # Glasses reflection fade
+    # Clip to face bounding box - ensure it never goes outside face
+    face_mask = np.zeros((h, w), dtype=np.float32)
+    face_mask[ymin:ymax, xmin:xmax] = 1.0
+    # Soften face boundary
+    face_mask = cv2.GaussianBlur(face_mask, (51, 51), 0)
+    mask = mask * face_mask
+    
+    # Soft vertical fade - wider range for full cheek coverage
+    vertical_fade = np.ones((h, 1), dtype=np.float32)
+    fade_range = int(face_h * 0.30)  # Much wider fade range for full cheek area
+    
+    for y in range(h):
+        dist_from_center = abs(y - blush_y_base)
+        if dist_from_center < fade_range:
+            # Strong in center, gentle fade
+            fade_factor = 1.0 - (dist_from_center / fade_range) * 0.25
+            vertical_fade[y] = max(0.75, fade_factor)  # Keep more visible
+        else:
+            # Gentle fade away from center
+            extra_dist = dist_from_center - fade_range
+            fade_factor = 0.75 - (extra_dist / max(1, h - fade_range)) * 0.35
+            vertical_fade[y] = max(0.25, fade_factor)  # Keep more visible at edges
+    
+    mask *= vertical_fade
+
+    # Handle glasses - detect and reduce in bright reflection zones
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    bright_zones = cv2.threshold(gray, 210, 1, cv2.THRESH_BINARY)[1]
-    bright_zones = cv2.GaussianBlur(bright_zones, (41, 41), 0)
-    bright_zones = bright_zones.astype(np.float32)
-    mask *= (1.0 - bright_zones * 0.6)
+    # Detect very bright areas (glasses reflections)
+    bright_zones = cv2.threshold(gray, 225, 1, cv2.THRESH_BINARY)[1]
+    bright_zones = cv2.GaussianBlur(bright_zones, (101, 101), 0).astype(np.float32)
+    # Reduce blush in bright zones (glasses reflections)
+    mask *= (1.0 - bright_zones * 0.7)  # Strong reduction in bright zones
     
+    # Strongly reduce in eye/eyelid area to avoid touching eyelids
+    eye_y_top = int(min(left_eye_bottom[1], right_eye_bottom[1]) - face_h * 0.08)
+    eye_y_bottom = int(max(left_eye_bottom[1], right_eye_bottom[1]) + face_h * 0.10)
+    for y in range(max(0, eye_y_top), min(h, eye_y_bottom)):
+        if y < h:
+            # Strong fade in eye area - ensure blush doesn't touch eyelids
+            dist_from_eye = abs(y - eye_y_bottom)
+            fade = max(0.1, 1.0 - (dist_from_eye / max(1, eye_y_bottom - eye_y_top)) * 0.9)
+            mask[y, :] *= fade  # Strong reduction in eye/eyelid area
+
+    # Ensure subtle, natural coverage
+    mask = np.clip(mask, 0.0, 0.85)  # Cap for subtlety
     return mask
 
 def detect_glasses(frame, coords):

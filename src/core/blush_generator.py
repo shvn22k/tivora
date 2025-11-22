@@ -26,24 +26,23 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         # Convert RGB to BGR
         blush_rgb = custom_color_rgb
         blush_bgr = np.array([blush_rgb[2], blush_rgb[1], blush_rgb[0]], dtype=np.uint8)
-        # Much more visible blush
-        base_intensity = 0.85
+        base_intensity = 0.65  # Clearly visible
     else:
-        # Adjust tone based on lighting - more subtle adjustments
+        # Adjust tone based on lighting - more vibrant pink tint
         target_lab = np.array(skin_lab, dtype=np.float32).copy()
         
         if light_type == "warm":
             # Warmer tone = soft coral-pink
-            target_lab[1] += 12    # add more red for visibility
-            target_lab[2] -= 4    # reduce yellow
+            target_lab[1] += 18    # more visible red tint
+            target_lab[2] -= 2    # slight yellow reduction
         elif light_type == "cool":
             # Cooler tone = mauve / rose
-            target_lab[1] += 10    # more red
-            target_lab[2] -= 8    # more cool
+            target_lab[1] += 17    # more visible red
+            target_lab[2] -= 6    # cool shift
         else:
             # Neutral = natural pink-beige
-            target_lab[1] += 11    # more red
-            target_lab[2] -= 5    # slight cool shift
+            target_lab[1] += 17    # more visible red
+            target_lab[2] -= 3    # slight cool shift
         
         # Build LAB overlay image
         lab_overlay = np.zeros((h, w, 3), dtype=np.uint8)
@@ -52,8 +51,8 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         lab_overlay[:, :, 2] = np.clip(target_lab[2], 0, 255)
         blush_bgr = cv2.cvtColor(lab_overlay, cv2.COLOR_LAB2BGR)[0, 0]
         
-        # Dynamically adjust intensity depending on brightness - much more visible
-        base_intensity = np.interp(brightness, [0.3, 0.7], [0.85, 0.75])  # Very visible
+        # Dynamically adjust intensity depending on brightness - clearly visible
+        base_intensity = np.interp(brightness, [0.3, 0.7], [0.6, 0.5])
     
     # Create intensity variation map for natural gradient
     # Stronger in center, fades smoothly at edges
@@ -67,32 +66,39 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
         distance_map = cheek_mask_float
     
     # Create natural gradient: stronger in center, soft fade at edges
-    center_intensity = distance_map * 0.8 + 0.4  # 0.4 to 1.2 (boosted for visibility)
-    edge_fade = cv2.GaussianBlur(cheek_mask_float, (101, 101), 0)  # Very soft edges
-    variation_mask = np.clip(center_intensity * edge_fade, 0.0, 1.0)  # Ensure valid range
+    # More visible gradient for clearly noticeable blush
+    center_intensity = distance_map * 0.6 + 0.4  # 0.4 to 1.0 for visible depth
+    edge_fade = cv2.GaussianBlur(cheek_mask_float, (101, 101), 0)  # Soft edges
+    variation_mask = np.clip(center_intensity * edge_fade, 0.0, 0.95)  # Cap at 0.95 for visibility
     
-    # Blend in LAB space with natural variation
+    # Convert to LAB for natural color blending
     frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
     
     # Create blush color in LAB space
     blush_lab_single = cv2.cvtColor(np.uint8([[blush_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
-    blush_lab = np.zeros((h, w, 3), dtype=np.float32)
-    blush_lab[:, :, :] = blush_lab_single
     
-    # Apply variation to intensity
+    # Apply strong visible blending - like real blush
+    # Blend color channels while slightly enhancing brightness for natural glow
     variation_3d = np.repeat(variation_mask[:, :, None], 3, axis=2)
-    intensity_map = variation_3d * base_intensity * strength
+    intensity_map = np.clip(variation_3d * base_intensity * strength, 0.0, 0.85)  # Very visible max 85%
     
-    # Soft blend that preserves skin texture
-    blended_lab = (1 - intensity_map) * frame_lab + intensity_map * blush_lab
+    # Blend color channels with slight brightness enhancement for natural glow
+    blended_lab = frame_lab.copy()
+    # Slightly enhance brightness in blush areas for natural glow
+    brightness_boost = intensity_map[:, :, 0] * 0.1  # Small brightness boost
+    blended_lab[:, :, 0] = np.clip(frame_lab[:, :, 0] + brightness_boost * 255.0, 0, 255)
+    # Blend A and B channels toward blush color - more aggressive
+    blended_lab[:, :, 1] = frame_lab[:, :, 1] * (1 - intensity_map[:, :, 0]) + blush_lab_single[1] * intensity_map[:, :, 0]
+    blended_lab[:, :, 2] = frame_lab[:, :, 2] * (1 - intensity_map[:, :, 0]) + blush_lab_single[2] * intensity_map[:, :, 0]
+    
     blended_bgr = cv2.cvtColor(np.clip(blended_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
     
-    # Preserve natural skin texture with very soft blending
+    # Soft blending to preserve skin texture while making blush very visible
     soft_mask = cv2.GaussianBlur(cheek_mask_float, (51, 51), 0)
     soft_mask_3d = np.repeat(soft_mask[:, :, None], 3, axis=2)
     
-    # Final blend: preserve most of original texture, add visible blush
-    blend_factor = soft_mask_3d * 0.9  # 90% blend for very strong visibility
+    # Final blend: subtle but visible - 50% blend for natural blush
+    blend_factor = soft_mask_3d * 0.5  # Subtle but visible blend
     out = frame.astype(np.float32) * (1 - blend_factor) + blended_bgr.astype(np.float32) * blend_factor
     out = np.clip(out, 0, 255).astype(np.uint8)
     
@@ -110,7 +116,7 @@ def apply_dynamic_blush(frame, cheek_mask_float, skin_lab, light_type='neutral',
                        int(w * 0.03), (20, 30, 70), -1)
             nose_glow = cv2.GaussianBlur(nose_glow, (25, 25), 0)
             glow_mask = (nose_glow.sum(axis=2) > 10).astype(np.float32)
-            glow_mask_3d = np.repeat(glow_mask[:, :, None], 3, axis=2) * 0.15
+            glow_mask_3d = np.repeat(glow_mask[:, :, None], 3, axis=2) * 0.08
             out = out.astype(np.float32) * (1 - glow_mask_3d) + nose_glow.astype(np.float32) * glow_mask_3d
             out = np.clip(out, 0, 255).astype(np.uint8)
         except (IndexError, KeyError):
