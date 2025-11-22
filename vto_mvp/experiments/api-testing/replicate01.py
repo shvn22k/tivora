@@ -1,5 +1,5 @@
 """
-Working Replicate VTON with IDM-VTON model
+Working Replicate VTON with IDM-VTON model - DEMO VERSION
 Install: pip install replicate
 """
 
@@ -7,16 +7,11 @@ import replicate
 import os
 import sys
 
-
-# Get API token from environment variable
-# Set this in your environment: export REPLICATE_API_TOKEN=your_token_here
-# Or create a .env file with: REPLICATE_API_TOKEN=your_token_here
-if not os.environ.get("REPLICATE_API_TOKEN"):
-    print("⚠️  Warning: REPLICATE_API_TOKEN not found in environment variables")
-    print("   Please set it before running: export REPLICATE_API_TOKEN=your_token_here")
+# Hardcoded API token for demo
+os.environ["REPLICATE_API_TOKEN"] = "lol"
 
 
-def tryon_idm_vton(person_image_path, garment_image_path, garment_description="clothing item", category="upper_body", output_path=r"C:\Projects\tivora\vto_mvp\api\outputs\result.jpg"):
+def tryon_idm_vton(person_image_path, garment_image_path, garment_description="clothing item", category="upper_body", output_path="outputs/result.jpg"):
     """
     Using IDM-VTON model on Replicate
     
@@ -62,20 +57,25 @@ def tryon_idm_vton(person_image_path, garment_image_path, garment_description="c
         print(f"   ✅ Saved: {output_path}")
         print(f"\n🎉 Success! Virtual try-on complete")
         return output_path
-        
+
     except Exception as e:
         print(f"❌ Error: {e}")
         return None
 
 
 if __name__ == "__main__":
-    # Use default images from api/inputs if no arguments provided
+    print("=" * 60)
+    print("🎨 Virtual Try-On Demo")
+    print("=" * 60)
+    print()
+    
+    # Use default images from inputs if no arguments provided
     if len(sys.argv) < 3:
-        person_img = r"C:\Projects\tivora\vto_mvp\api\inputs\person03.jpeg"
-        garment_img = r"C:\Projects\tivora\vto_mvp\api\inputs\chaddi.jpeg"
-        garment_desc = "spider-man top"
+        person_img = "inputs/person02.jpg"
+        garment_img = "inputs/coolpolo.jpg"
+        garment_desc = "polo tshirt"
         garment_category = "upper_body"  # "upper_body", "lower_body", or "dresses"
-        print(f"Using default images:")
+        print(f"📷 Using default demo images:")
         print(f"  Person: {person_img}")
         print(f"  Garment: {garment_img}")
         print(f"  Description: {garment_desc}")
@@ -83,7 +83,7 @@ if __name__ == "__main__":
     else:
         person_img = sys.argv[1]
         garment_img = sys.argv[2]
-        garment_desc = sys.argv[3] if len(sys.argv) > 3 else "spider-man top"
+        garment_desc = sys.argv[3] if len(sys.argv) > 3 else "polo tshirt"
         garment_category = sys.argv[4] if len(sys.argv) > 4 else "upper_body"
     
     # Run the virtual try-on
@@ -91,6 +91,7 @@ if __name__ == "__main__":
     
     if result:
         print(f"\n✨ Result saved: {result}")
+        print(f"💡 Open the result to see the virtual try-on!")
     else:
-        print("\n❌ Virtual try-on failed. Please check your API token and input images.")
+        print("\n❌ Virtual try-on failed. Please check input images.")
 
