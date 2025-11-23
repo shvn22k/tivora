@@ -1,0 +1,44 @@
+/* Global Reset & Base Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --cream: #F2EBDD;
+  --golden-tan: #D6A571;
+  --medium-tan: #C8A27E;
+  --deep-brown: #6F4E37;
+  --darkest: #2B1E12;
+  
+  --spacing-xs: 8px;
+  --spacing-sm: 16px;
+  --spacing-md: 24px;
+  --spacing-lg: 40px;
+  --spacing-xl: 64px;
+}
+
+body {
+  margin: 0;
+  font-family: 'Roboto Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--cream);
+  color: var(--darkest);
+  line-height: 1.6;
+}
+
+code {
+  font-family: 'Roboto Mono', monospace;
+}
+
+button {
+  font-family: 'Roboto Mono', monospace;
+}
+
+input {
+  font-family: 'Roboto Mono', monospace;
+}
+

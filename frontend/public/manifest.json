@@ -1,0 +1,9 @@
+{
+  "short_name": "TIVORA",
+  "name": "TIVORA Virtual Styling Studio",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#2B1E12",
+  "background_color": "#F2EBDD"
+}
+

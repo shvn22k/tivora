@@ -216,3 +216,16 @@ checkpoints/
 *.safetensors
 *.bin
 *.onnx
+
+# VTO generated outputs and uploads
+backend/vto/outputs/
+backend/vto/uploads/
+backend/vto/temp/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Environment variables
+.env.local
+frontend/.env.local
