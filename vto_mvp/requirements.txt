@@ -1,7 +1,0 @@
-opencv-python
-mediapipe
-torch
-torchvision
-numpy
-matplotlib
-scikit-image
