@@ -32,7 +32,7 @@ export const applyMakeup = async (imageFile, options = {}) => {
 };
 
 // Recommendation API
-export const getRecommendations = async (skinToneHex, gender, numItems = 15) => {
+export const getRecommendations = async (skinToneHex, gender, numItems = 6) => {
   const response = await fetch(`${API_URLS.RECOMMENDATION}/recommend`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

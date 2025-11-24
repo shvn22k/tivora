@@ -49,8 +49,8 @@ export const AppProvider = ({ children }) => {
     if (selectedGarments.includes(index)) {
       setSelectedGarments(selectedGarments.filter(i => i !== index));
     } else {
-      if (selectedGarments.length >= 15) {
-        alert('Maximum 15 garments can be selected');
+      if (selectedGarments.length >= 6) {
+        alert('Maximum 6 garments can be selected');
         return;
       }
       setSelectedGarments([...selectedGarments, index]);

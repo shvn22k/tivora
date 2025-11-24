@@ -23,7 +23,7 @@ const RecommendationsStep = () => {
   const loadRecommendations = async () => {
     setLoading(true);
     try {
-      const data = await getRecommendations(skinTone.hex, user.gender, 15);
+      const data = await getRecommendations(skinTone.hex, user.gender, 6);
       setRecommendations(data);
       console.log(`Loaded ${data.length} recommendations`);
       

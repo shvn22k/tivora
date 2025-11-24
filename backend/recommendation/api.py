@@ -153,7 +153,7 @@ def semantic_search(query: str, top_k: int = 30) -> List[tuple]:
 class RecommendRequest(BaseModel):
     skin_tone_hex: str  # e.g., "#C5966C"
     gender: Literal["male", "female"]
-    num_items: int = 15
+    num_items: int = 6
 
 
 class GarmentResponse(BaseModel):
