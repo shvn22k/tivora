@@ -4,6 +4,20 @@ const API_URLS = {
   VTO: 'http://localhost:8003'
 };
 export const analyzeSkinTone = async (imageFile) => {
+  // Temporarily returning fake data while makeup API is being fixed
+  await new Promise(resolve => setTimeout(resolve, 1000)); // simulate API delay
+  
+  return {
+    skin_tone_hex: '#C58B68',
+    undertone: 'warm',
+    palette: {
+      lipstick_color: '#D4756E',
+      blush_color: '#E89B8F',
+      eyeshadow_color: '#A67B5B'
+    }
+  };
+  
+  /* Original code - uncomment when makeup API is working
   const formData = new FormData();
   formData.append('file', imageFile);
 
@@ -13,9 +27,17 @@ export const analyzeSkinTone = async (imageFile) => {
   });
 
   return response.json();
+  */
 };
 
 export const applyMakeup = async (imageFile, options = {}) => {
+  // Temporarily returning original image while makeup API is being fixed
+  await new Promise(resolve => setTimeout(resolve, 1500)); // simulate API delay
+  
+  // Return the original image file as a blob
+  return imageFile;
+  
+  /* Original code - uncomment when makeup API is working
   const formData = new FormData();
   formData.append('file', imageFile);
   formData.append('apply_lipstick', options.applyLipstick ?? true);
@@ -29,6 +51,7 @@ export const applyMakeup = async (imageFile, options = {}) => {
   });
 
   return response.blob();
+  */
 };
 
 // Recommendation API
